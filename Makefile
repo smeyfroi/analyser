@@ -1,5 +1,5 @@
 TARGET = analyser
-INCLUDE = -I/usr/local/include -I/usr/include -I/Gist/src -I/Gist/libs/kiss_fft130
+INCLUDE = -I/usr/local/include -I/usr/include -I/Gist/src -I/Gist/libs/kiss_fft130 -Iinclude
 LDFLAGS = -L/Gist/build/src
 LIBS = -lGist -lrt
 CC = g++
@@ -11,7 +11,7 @@ default: $(TARGET)
 all: default
 
 OBJECTS = $(patsubst %.cpp, %.o, $(wildcard src/*.cpp)) $(patsubst %.c, %.o, $(wildcard src/*.c))
-HEADERS = $(wildcard src/*.h)
+HEADERS = $(wildcard src/*.h) $(wildcard src/*.hpp)
 
 %.o: %.cpp $(HEADERS)
 	$(CC) $(CFLAGS) $(INCLUDE) -DUSE_KISS_FFT -c $< -o $@
