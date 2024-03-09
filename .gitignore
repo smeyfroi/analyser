@@ -1,2 +1,3 @@
 /tlpi-dist
 *.o
+/src/main.o
