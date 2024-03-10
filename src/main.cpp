@@ -52,6 +52,7 @@ void openMessageQueueForRead() {
 }
 
 #ifdef INCLUDE_MQ_WRITER_TEST
+using namespace std::chrono_literals;
 void writeFile() {
   mq_unlink(queueName);
   openMessageQueueForWrite();
@@ -61,7 +62,9 @@ void writeFile() {
   char *pcmInt16Frame = new char[frameSize];
   for(float t = 3.0; t < 3.5; t += 0.05) {
     std::cout << "Write from " << t << "s" << std::endl;
-    file.seekg(t*44.1*1000.0*4.0);
+    file.seekg(t*44100.0*4.0); // 4 assumes stereo TODO CHECK THE FILE
+    std::this_thread::sleep_for(5.814ms); // For 172 frames/s mono
+
     file.read(pcmInt16Frame, frameSize);
   //  std::cout << "First sample " << *reinterpret_cast<int16_t*>(pcmInt16Frame) << std::endl;
 
@@ -199,7 +202,7 @@ void readMessages() {
   std::cout << "Wait for OSC client" << std::endl;
   numRead = recvfrom(serverSocketFD, buf, BUF_SIZE, 0, (struct sockaddr *) &claddr, &len);
   if (numRead == -1) {
-    std::cerr << "Error from recvFrom";
+    std::cerr << "Error from recvFrom" << std::endl;
   }
 
   // open the MQ for audio frames
@@ -254,11 +257,11 @@ void readMessages() {
     // }
 
     char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
-    size_t bufferSize = makeOscPacket(gist, oscBuffer);
+    ssize_t bufferSize = makeOscPacket(gist, oscBuffer);
     std::cout << "Packet " << (int)bufferSize << std::endl;
 
-    if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != numRead) {
-      std::cerr << "Error sending to " << inetAddressStr((struct sockaddr *) &claddr, len, addrStr, IS_ADDR_STR_LEN) << ": " << strerror(errno);
+    if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != bufferSize) {
+      std::cerr << "Error sending to " << inetAddressStr((struct sockaddr *) &claddr, len, addrStr, IS_ADDR_STR_LEN) << ": " << strerror(errno) << std::endl;
     }
 
     timestamp++;
