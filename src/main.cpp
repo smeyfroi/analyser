@@ -3,8 +3,8 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-// #include <chrono>
-// #include <thread>
+#include <chrono>
+#include <thread>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -60,9 +60,9 @@ void writeFile() {
   std::ifstream file;
   file.open("recordings/Nightsong-signed16b-pcm.raw"); // little-endian
   char *pcmInt16Frame = new char[frameSize];
-  for(float t = 3.0; t < 3.5; t += 0.05) {
-    std::cout << "Write from " << t << "s" << std::endl;
-    file.seekg(t*44100.0*4.0); // 4 assumes stereo TODO CHECK THE FILE
+  // file.seekg(60.0*44100.0*2.0); // 60.0 seconds in, where 2.0 assumes mono 16b signed int
+  for(int t = 0; t < 2000; t++) { // 1000 is 5.8s of audio
+    std::cout << "Write frame " << t << std::endl;
     std::this_thread::sleep_for(5.814ms); // For 172 frames/s mono
 
     file.read(pcmInt16Frame, frameSize);
@@ -74,11 +74,6 @@ void writeFile() {
     }
   }
   file.close();
-
-//  std::cout << "sleep" << std::endl;
-//  using namespace std::chrono_literals;
-//  std::this_thread::sleep_for(10000ms);
-//  std::cout << "done sleep" << std::endl;
   mq_unlink(queueName);
 }
 #endif
@@ -214,8 +209,8 @@ void readMessages() {
       std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
       exit(1);
     }
+    // std::cout << "MQ message size " << attr.mq_msgsize << std::endl;
     char *receivedFrame = new char[attr.mq_msgsize];
-  //  std::cout << attr.mq_msgsize << std::endl;
   //  std::cout << attr.mq_maxmsg << std::endl;
   //  if (attr.mq_msgsize != frameSize) {
   //    std::cerr << "Message size != frameSize: " << attr.mq_msgsize << std::endl;
@@ -238,13 +233,14 @@ void readMessages() {
     float *floatFrame = new float[samplesPerFrame];
     Gist<float> gist(samplesPerFrame, sampleRate);
     for(size_t i = 0; i < frameSize; i += charsPerSample) {
-      floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i));
+      floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i)); // little-endian int16_t
     }
     //float f = (int)*(receivedFrame) * 256 + (int)*(receivedFrame+1);
     //std::cout << "Big endian float " << f << std::endl;
     //float f2 = (int)*(receivedFrame+1) * 256 + (int)*(receivedFrame);
     //std::cout << "Little endian float " << f2 << std::endl;
     //std::cout << "First float " << int(floatFrame[0]) << std::endl;
+    //std::cout << "frame.0: " << (int)receivedFrame[0] << ", frame.1: " << (int)receivedFrame[1] << ", float: " << floatFrame[0] << std::endl;
 
     gist.processAudioFrame(floatFrame, samplesPerFrame);
 
@@ -258,7 +254,7 @@ void readMessages() {
 
     char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
     ssize_t bufferSize = makeOscPacket(gist, oscBuffer);
-    std::cout << "Packet " << (int)bufferSize << std::endl;
+    //std::cout << "Packet " << (int)bufferSize << std::endl;
 
     if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != bufferSize) {
       std::cerr << "Error sending to " << inetAddressStr((struct sockaddr *) &claddr, len, addrStr, IS_ADDR_STR_LEN) << ": " << strerror(errno) << std::endl;
@@ -285,3 +281,19 @@ int main(int argc, char* argv[]) {
 #endif
 }
 
+//int main() {
+//  std::ifstream file;
+//  file.open("recordings/Nightsong-signed16b-pcm.raw"); // little-endian
+//  /* file.seekg(4.1*44100.0*2.0); // 60.0 seconds in, where 2.0 assumes mono 16b signed int */
+//  char *pcmInt16Frame = new char[frameSize];
+//  for(int i = 0; i < 1000; i++) {
+//    file.read(pcmInt16Frame, frameSize);
+//    float *floatFrame = new float[samplesPerFrame];
+//    Gist<float> gist(samplesPerFrame, sampleRate);
+//    for(size_t i = 0; i < frameSize; i += charsPerSample) {
+//      floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(pcmInt16Frame + i)); // little-endian int16_t
+//    }
+//    gist.processAudioFrame(floatFrame, samplesPerFrame);
+//    std::cout << i << ": Pitch: " << gist.pitch() << std::endl;
+//  }
+//}
