@@ -13,35 +13,15 @@
 #include "Gist.h"
 #include <oscpp/client.hpp>
 
-#define INCLUDE_MQ_WRITER_TEST
-
 const size_t frameSize = 512;
 const size_t charsPerSample = 2; // 2 chars per 16bit PCM sample
 const size_t samplesPerFrame = frameSize / charsPerSample;
 const int sampleRate = 44100;
 
-#ifdef INCLUDE_MQ_WRITER_TEST
-mqd_t write_mqd;
-#endif
 mqd_t read_mqd;
 const char* queueName = "/samples";
 
 unsigned long long timestamp;
-
-#ifdef INCLUDE_MQ_WRITER_TEST
-void openMessageQueueForWrite() {
-  int flags = O_CREAT | O_WRONLY; // | O_NONBLOCK;
-  mode_t perms = S_IRUSR | S_IWUSR;
-  struct mq_attr attr;
-  attr.mq_maxmsg = 8;
-  attr.mq_msgsize = frameSize;
-  write_mqd = mq_open(queueName, flags, perms, &attr);
-  if (write_mqd == (mqd_t)-1) {
-    std::cerr << "Can't open mq '" << queueName << "' for write" << std::endl;
-    exit(1);
-  }
-}
-#endif
 
 void openMessageQueueForRead() {
   read_mqd = mq_open(queueName, O_RDONLY); // will block
@@ -51,38 +31,10 @@ void openMessageQueueForRead() {
   }
 }
 
-#ifdef INCLUDE_MQ_WRITER_TEST
-using namespace std::chrono_literals;
-void writeFile() {
-  mq_unlink(queueName);
-  openMessageQueueForWrite();
-
-  std::ifstream file;
-  file.open("recordings/Nightsong-signed16b-pcm.raw"); // little-endian
-  char *pcmInt16Frame = new char[frameSize];
-  // file.seekg(60.0*44100.0*2.0); // 60.0 seconds in, where 2.0 assumes mono 16b signed int
-  for(int t = 0; t < 2000; t++) { // 1000 is 5.8s of audio
-    std::cout << "Write frame " << t << std::endl;
-    std::this_thread::sleep_for(5.814ms); // For 172 frames/s mono
-
-    file.read(pcmInt16Frame, frameSize);
-  //  std::cout << "First sample " << *reinterpret_cast<int16_t*>(pcmInt16Frame) << std::endl;
-
-    if (mq_send(write_mqd, pcmInt16Frame, frameSize, 0) == -1) {
-      std::cerr << "Can't send'" << std::endl;
-      exit(1);
-    }
-  }
-  file.close();
-  mq_unlink(queueName);
-}
-#endif
-
 int inetPassiveSocket(const char *service, int type) {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
     int sfd, s;
-
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_canonname = NULL;
     hints.ai_addr = NULL;
@@ -90,29 +42,21 @@ int inetPassiveSocket(const char *service, int type) {
     hints.ai_socktype = type;
     hints.ai_family = AF_UNSPEC;        /* Allows IPv4 or IPv6 */
     hints.ai_flags = AI_PASSIVE;        /* Use wildcard IP address */
-
     s = getaddrinfo(NULL, service, &hints, &result);
     if (s != 0)
         return -1;
-
     /* Walk through returned list until we find an address structure
        that can be used to successfully create and bind a socket */
-
     for (rp = result; rp != NULL; rp = rp->ai_next) {
         sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sfd == -1)
             continue;                   /* On error, try next address */
-
         if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == 0)
             break;                      /* Success */
-
         /* bind() failed: close this socket and try next address */
-
         close(sfd);
     }
-
     freeaddrinfo(result);
-
     return (rp == NULL) ? -1 : sfd;
 }
 
@@ -158,7 +102,6 @@ size_t makeOscPacket(Gist<float>& gist, char* buffer) {
       .closeMessage()
       // missing FFT magnitude spectrum, Mel-frequency representations
     .closeBundle();
-
   size_t packet_size = packet.size();
   if (packet_size > MAX_OSC_PACKET_SIZE) {
     std::cerr << "Packet size " << packet_size << " > max of " << MAX_OSC_PACKET_SIZE << std::endl;
@@ -184,7 +127,6 @@ char* inetAddressStr(const struct sockaddr *addr, socklen_t addrlen, char *addrS
 void readMessages() {
   timestamp = 0;
 
-  // wait for an OSC client
   struct sockaddr_storage claddr;
   socklen_t len;
   ssize_t numRead;
@@ -209,13 +151,8 @@ void readMessages() {
       std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
       exit(1);
     }
-    // std::cout << "MQ message size " << attr.mq_msgsize << std::endl;
+    // TODO: don't allocate on stack
     char *receivedFrame = new char[attr.mq_msgsize];
-  //  std::cout << attr.mq_maxmsg << std::endl;
-  //  if (attr.mq_msgsize != frameSize) {
-  //    std::cerr << "Message size != frameSize: " << attr.mq_msgsize << std::endl;
-  //    exit(1);
-  //  }
 
     unsigned int prio;
     ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
@@ -223,77 +160,32 @@ void readMessages() {
       std::cerr << "Can't receive from mq" << std::endl;
       exit(1);
     }
-  //  std::cout << "Size read " << int(sizeRead) << std::endl;
-  //  if (sizeRead != frameSize) {
-  //    std::cerr << "Received " << sizeRead << std::endl;
-  //    exit(1);
-  //  }
-  //  std::cout << "First byte " << *reinterpret_cast<int16_t*>(receivedFrame) << std::endl;
 
+    // TODO: don't allocate on stack
     float *floatFrame = new float[samplesPerFrame];
     Gist<float> gist(samplesPerFrame, sampleRate);
     for(size_t i = 0; i < frameSize; i += charsPerSample) {
       floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i)); // little-endian int16_t
     }
-    //float f = (int)*(receivedFrame) * 256 + (int)*(receivedFrame+1);
-    //std::cout << "Big endian float " << f << std::endl;
-    //float f2 = (int)*(receivedFrame+1) * 256 + (int)*(receivedFrame);
-    //std::cout << "Little endian float " << f2 << std::endl;
-    //std::cout << "First float " << int(floatFrame[0]) << std::endl;
-    //std::cout << "frame.0: " << (int)receivedFrame[0] << ", frame.1: " << (int)receivedFrame[1] << ", float: " << floatFrame[0] << std::endl;
 
     gist.processAudioFrame(floatFrame, samplesPerFrame);
 
-    // float pitch = gist.pitch();
-    // std::cout << pitch << std::endl;
-    // float sd_hwr = gist.spectralDifferenceHWR();
-    // float csd = gist.complexSpectralDifference();
-    // if (csd > 200000) {
-    //   std::cout << csd << std::endl;
-    // }
-
+    // TODO: don't allocate on stack
     char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
     ssize_t bufferSize = makeOscPacket(gist, oscBuffer);
-    //std::cout << "Packet " << (int)bufferSize << std::endl;
 
     if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != bufferSize) {
       std::cerr << "Error sending to " << inetAddressStr((struct sockaddr *) &claddr, len, addrStr, IS_ADDR_STR_LEN) << ": " << strerror(errno) << std::endl;
+      // TODO: does this mean the client went away? If so we need to go back to a waiting state
     }
 
     timestamp++;
   }
 }
 
-// Execute with no args for a reader, else a writer
 int main(int argc, char* argv[]) {
-#ifdef INCLUDE_MQ_WRITER_TEST
-  if (argc > 1) {
-    std::cout << "Start writer\n";
-    writeFile();
-  } else {
-#endif
     std::cout << "Start server\n";
     startOscServer();
     std::cout << "Start reader\n";
     readMessages();
-#ifdef INCLUDE_MQ_WRITER_TEST
-  }
-#endif
 }
-
-//int main() {
-//  std::ifstream file;
-//  file.open("recordings/Nightsong-signed16b-pcm.raw"); // little-endian
-//  /* file.seekg(4.1*44100.0*2.0); // 60.0 seconds in, where 2.0 assumes mono 16b signed int */
-//  char *pcmInt16Frame = new char[frameSize];
-//  for(int i = 0; i < 1000; i++) {
-//    file.read(pcmInt16Frame, frameSize);
-//    float *floatFrame = new float[samplesPerFrame];
-//    Gist<float> gist(samplesPerFrame, sampleRate);
-//    for(size_t i = 0; i < frameSize; i += charsPerSample) {
-//      floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(pcmInt16Frame + i)); // little-endian int16_t
-//    }
-//    gist.processAudioFrame(floatFrame, samplesPerFrame);
-//    std::cout << i << ": Pitch: " << gist.pitch() << std::endl;
-//  }
-//}
