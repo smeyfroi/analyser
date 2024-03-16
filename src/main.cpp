@@ -124,6 +124,12 @@ char* inetAddressStr(const struct sockaddr *addr, socklen_t addrlen, char *addrS
     return addrStr;
 }
 
+constexpr size_t MAX_MQ_FRAME_SIZE = 520;
+char *receivedFrame = new char[MAX_MQ_FRAME_SIZE];
+constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_FRAME_SIZE / 4; // float32 is 4 chars
+float *floatFrame = new float[MAX_MQ_FLOAT_FRAME_SIZE];
+char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
+
 void readMessages() {
   timestamp = 0;
 
@@ -151,8 +157,6 @@ void readMessages() {
       std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
       exit(1);
     }
-    // TODO: don't allocate on stack
-    char *receivedFrame = new char[attr.mq_msgsize];
 
     unsigned int prio;
     ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
@@ -161,8 +165,6 @@ void readMessages() {
       exit(1);
     }
 
-    // TODO: don't allocate on stack
-    float *floatFrame = new float[samplesPerFrame];
     Gist<float> gist(samplesPerFrame, sampleRate);
     for(size_t i = 0; i < frameSize; i += charsPerSample) {
       floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i)); // little-endian int16_t
@@ -170,8 +172,6 @@ void readMessages() {
 
     gist.processAudioFrame(floatFrame, samplesPerFrame);
 
-    // TODO: don't allocate on stack
-    char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
     ssize_t bufferSize = makeOscPacket(gist, oscBuffer);
 
     if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != bufferSize) {
