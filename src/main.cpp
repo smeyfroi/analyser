@@ -174,7 +174,7 @@ void readMessages() {
 
     gist.processAudioFrame(floatFrame, samplesPerFrame);
 
-    ssize_t bufferSize = makeOscPacket(gist, oscBuffer);
+    ssize_t bufferSize = makeOscPacket(gist);
 
     if (sendto(serverSocketFD, oscBuffer, bufferSize, 0, (struct sockaddr *) &claddr, len) != bufferSize) {
       std::cerr << "Error sending to " << inetAddressStr((struct sockaddr *) &claddr, len, addrStr, IS_ADDR_STR_LEN) << ": " << strerror(errno) << std::endl;
