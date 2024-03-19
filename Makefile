@@ -1,6 +1,6 @@
 TARGET = analyser
-INCLUDE = -I/usr/local/include -I/usr/include -I/Gist/src -I/Gist/libs/kiss_fft130 -Iinclude
-LDFLAGS = -L/Gist/build/src
+INCLUDE = -I/usr/local/include -I/usr/include -I../Gist/src -I../Gist/libs/kiss_fft130 -Iinclude
+LDFLAGS = -L../Gist/build/src
 LIBS = -lGist -lrt
 CC = g++
 CFLAGS = -g -Wall
