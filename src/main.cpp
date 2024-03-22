@@ -86,7 +86,7 @@ void startOscServer() {
   std::cout << "Opened OSC listener" << std::endl;
 }
 
-const size_t MAX_OSC_PACKET_SIZE = 512;
+const size_t MAX_OSC_PACKET_SIZE = 512; // safe max is ethernet packet MTU 1500 (minus overhead gives max 1380) https://superuser.com/questions/1341012/practical-vs-theoretical-max-limit-of-tcp-packet-size
 const size_t OSC_TERMINATOR_LENGTH = 6;
 const char* OSC_TERMINATOR = "[/TCP]";
 char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
@@ -94,9 +94,13 @@ char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
 size_t makeOscPacket(Gist<float>& gist) {
+  int channelId = 1;
   OSCPP::Client::Packet packet(oscBuffer, MAX_OSC_PACKET_SIZE);
   packet
     .openBundle(timestamp)
+      .openMessage("/meta", 1)
+        .int32(channelId)
+      .closeMessage()
       .openMessage("/time", 3)
         .float32(gist.rootMeanSquare())
         .float32(gist.peakEnergy())
@@ -119,7 +123,28 @@ size_t makeOscPacket(Gist<float>& gist) {
       .openMessage("/pitch", 1)
         .float32(gist.pitch())
       .closeMessage()
-      // missing FFT magnitude spectrum, Mel-frequency representations
+//      .openMessage("/spectrum", OSCPP::Tags::array(gist.getMagnitudeSpectrum().size()))
+//        .openArray()
+//  for(float x : gist.getMagnitudeSpectrum()) {
+//    packet.float32(x)
+//  }
+//  packet
+//        .closeArray()
+//      .closeMessage()
+//      .openMessage("/mel", OSCPP::Tags::array(gist.getMelFrequencySpectrum().size()))
+//        .openArray()
+//  for(float x : gist.getMelFrequencySpectrum()) {
+//    packet.float32(x)
+//  }
+//  packet
+//        .closeArray()
+//      .closeMessage()
+      .openMessage("/mfcc", OSCPP::Tags::array(gist.getMelFrequencyCepstralCoefficients().size()));
+  for(float x : gist.getMelFrequencyCepstralCoefficients()) {
+    packet.float32(x);
+  }
+  packet
+      .closeMessage()
     .closeBundle();
   size_t packet_size = packet.size();
   if (packet_size > MAX_OSC_PACKET_SIZE - OSC_TERMINATOR_LENGTH) {
