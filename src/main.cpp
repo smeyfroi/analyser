@@ -93,8 +93,7 @@ char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
 /* std::array<char, MAX_OSC_PACKET_SIZE> oscBuffer; */
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
-size_t makeOscPacket(Gist<float>& gist) {
-  int channelId = 1;
+size_t makeOscPacket(int channelId, Gist<float>& gist) {
   OSCPP::Client::Packet packet(oscBuffer, MAX_OSC_PACKET_SIZE);
   packet
     .openBundle(timestamp)
@@ -186,21 +185,30 @@ void readMessages() {
       snprintf(addrStr, ADDRSTRLEN, "(?UNKNOWN?)");
     std::cout << "Connection from " << addrStr << std::endl;
 
+    struct mq_attr attr;
+    if (mq_getattr(read_mqd, &attr) == -1) {
+      std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
+      exit(1);
+    }
+
     while(true) {
-      struct mq_attr attr;
-      if (mq_getattr(read_mqd, &attr) == -1) {
-        std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
-        exit(1);
-      }
-
       unsigned int prio;
+      int channelId;
       ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
-      if (sizeRead == -1) {
-        std::cerr << "Can't receive from mq" << std::endl;
-        exit(1);
+      if (sizeRead == sizeof(int16_t)) {
+        channelId = *(reinterpret_cast<int*>(receivedFrame));
+        std::cout << "channel " << channelId << std::endl;
+        sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
+      }
+      if (sizeRead > MAX_MQ_FRAME_SIZE) {
+        std::cerr << "Message size " << sizeRead << " larger than max " << MAX_MQ_FRAME_SIZE << std::endl;
+        continue;
+//      } else if (sizeRead  != samplesPerFrame * sizeof(int16_t)) {
+//        std::cerr << "Message size " << sizeRead << " != " << frameSize * sizeof(int16_t) << std::endl;
+//        continue;
       }
 
-      // TODO: Can we reinterpret cast the entire buffer instead of copying here?
+      // samples from Jamulus are int16_t; Gist wants float32; so need to convert
       Gist<float> gist(samplesPerFrame, sampleRate);
       for(size_t i = 0; i < frameSize; i += charsPerSample) {
         floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i)); // little-endian int16_t
@@ -208,7 +216,7 @@ void readMessages() {
 
       gist.processAudioFrame(floatFrame, samplesPerFrame);
 
-      ssize_t bufferSize = makeOscPacket(gist);
+      ssize_t bufferSize = makeOscPacket(channelId, gist);
 
       if (write(cfd, oscBuffer, bufferSize) != bufferSize) {
         close(cfd);
