@@ -19,10 +19,7 @@ using namespace std::chrono_literals;
 
 #define BACKLOG 50
 
-const size_t frameSize = 512;
-const size_t charsPerSample = 2; // 2 chars per 16bit PCM sample
-const size_t samplesPerFrame = frameSize / charsPerSample;
-const int sampleRate = 44100;
+const int sampleRate = 48000; // whatever Jamulus is sending to us
 
 mqd_t read_mqd;
 const char* queueName = "/samples";
@@ -153,9 +150,9 @@ size_t makeOscPacket(int channelId, Gist<float>& gist) {
   return packet_size + OSC_TERMINATOR_LENGTH;
 }
 
-constexpr size_t MAX_MQ_FRAME_SIZE = 520;
+constexpr size_t MAX_MQ_FRAME_SIZE = 2048; // must be at least mq_msgsize
 char *receivedFrame = new char[MAX_MQ_FRAME_SIZE];
-constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_FRAME_SIZE / 4; // float32 is 4 chars
+constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_FRAME_SIZE / sizeof(float);
 float *floatFrame = new float[MAX_MQ_FLOAT_FRAME_SIZE];
 constexpr size_t IS_ADDR_STR_LEN = 4096;
 char *addrStr = new char[IS_ADDR_STR_LEN]; // for error output
@@ -170,7 +167,10 @@ void readMessages() {
   char host[NI_MAXHOST];
   char service[NI_MAXSERV];
   char addrStr[ADDRSTRLEN];
-  while(true) {
+  unsigned int prio;
+  int16_t channelId;
+  while(true) { // handle client connections, serially, forever
+
     /* Accept a client connection, obtaining client's address */
     struct sockaddr_storage claddr;
     socklen_t addrlen = sizeof(struct sockaddr_storage);
@@ -183,38 +183,43 @@ void readMessages() {
       snprintf(addrStr, ADDRSTRLEN, "(%s, %s)", host, service);
     else
       snprintf(addrStr, ADDRSTRLEN, "(?UNKNOWN?)");
-    std::cout << "Connection from " << addrStr << std::endl;
+    std::cout << "OSC client connection from " << addrStr << std::endl;
 
+    // Prepare to read from mq
     struct mq_attr attr;
     if (mq_getattr(read_mqd, &attr) == -1) {
       std::cerr << "Can't fetch attributes for mq '" << queueName << "'" << std::endl;
-      exit(1);
+      break;
+    }
+    if (attr.mq_msgsize > MAX_MQ_FRAME_SIZE) {
+      std::cerr << "mq_msgsize " << attr.mq_msgsize << " > MAX_MQ_FRAME_SIZE " << MAX_MQ_FRAME_SIZE << std::endl;
+      break;
     }
 
+    // send OSC messages to one client until it disconnects
     while(true) {
-      unsigned int prio;
-      int channelId;
+
+      // First message is the channel ID as an int16_t
       ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
       if (sizeRead == sizeof(int16_t)) {
-        channelId = *(reinterpret_cast<int*>(receivedFrame));
-        std::cout << "channel " << channelId << std::endl;
+        channelId = *(reinterpret_cast<int16_t*>(receivedFrame));
+        // Second message is the audio frame
         sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
       }
-      if (sizeRead > MAX_MQ_FRAME_SIZE) {
-        std::cerr << "Message size " << sizeRead << " larger than max " << MAX_MQ_FRAME_SIZE << std::endl;
+      // error checking
+      if (sizeRead < 200 || sizeRead % 2 == 1) {
+        std::cerr << "weird message size " << sizeRead << std::endl;
         continue;
-//      } else if (sizeRead  != samplesPerFrame * sizeof(int16_t)) {
-//        std::cerr << "Message size " << sizeRead << " != " << frameSize * sizeof(int16_t) << std::endl;
-//        continue;
       }
 
-      // samples from Jamulus are int16_t; Gist wants float32; so need to convert
-      Gist<float> gist(samplesPerFrame, sampleRate);
-      for(size_t i = 0; i < frameSize; i += charsPerSample) {
-        floatFrame[i / charsPerSample] = *(reinterpret_cast<int16_t*>(receivedFrame + i)); // little-endian int16_t
+      // samples from Jamulus are int16_t; Gist wants float32; so convert
+      int sampleCount = sizeRead / sizeof(int16_t);
+      for(size_t i = 0; i < sizeRead; i += sizeof(int16_t)) {
+        floatFrame[i / sizeof(int16_t)] = static_cast<float>(*(reinterpret_cast<int16_t*>(receivedFrame + i))); // little-endian int16_t to float32
       }
 
-      gist.processAudioFrame(floatFrame, samplesPerFrame);
+      Gist<float> gist(sampleCount, sampleRate);
+      gist.processAudioFrame(floatFrame, sampleCount);
 
       ssize_t bufferSize = makeOscPacket(channelId, gist);
 
@@ -230,15 +235,15 @@ void readMessages() {
 }
 
 int main(int argc, char* argv[]) {
-    /* Ignore the SIGPIPE signal, so that we find out about broken connection
-        errors via a failure from write(). */
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
-      std::cerr << "ERR: signal" << std::endl;
-      exit(1);
-    }
+  /* Ignore the SIGPIPE signal, so that we find out about broken connection
+     errors via a failure from write(). */
+  if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    std::cerr << "ERR: signal" << std::endl;
+    exit(1);
+  }
 
-    std::cout << "Start OSC server\n";
-    startOscServer();
-    std::cout << "Start pipeline\n";
-    readMessages();
+  std::cout << "Start OSC server\n";
+  startOscServer();
+  std::cout << "Start pipeline\n";
+  readMessages();
 }
