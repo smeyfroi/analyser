@@ -19,7 +19,7 @@ using namespace std::chrono_literals;
 
 #define BACKLOG 50
 
-const auto startTime = std::chrono::system_clock::now(); // arbitrary start point for timestamps
+/* const auto startTime = std::chrono::system_clock::now(); // arbitrary start point for timestamps */
 
 const int sampleRate = 48000; // whatever Jamulus is sending to us
 
@@ -90,12 +90,13 @@ char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
 /* std::array<char, MAX_OSC_PACKET_SIZE> oscBuffer; */
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
-size_t makeOscPacket(int channelId, Gist<float>& gist) {
-  const auto now = std::chrono::system_clock::now();
-  unsigned long long timestamp = std::chrono::nanoseconds(now - startTime).count();
+size_t makeOscPacket(int channelId, unsigned long frameSequence, Gist<float>& gist) {
+//  const auto now = std::chrono::system_clock::now();
+//  unsigned long long timestamp = std::chrono::nanoseconds(now - startTime).count(); // TODO: this should be a 64bit NTP Timestamp
   OSCPP::Client::Packet packet(oscBuffer, MAX_OSC_PACKET_SIZE);
   packet
-    .openBundle(timestamp)
+    //.openBundle(timestamp)
+    .openBundle(frameSequence)
       .openMessage("/meta", 1)
         .int32(channelId)
       .closeMessage()
@@ -161,7 +162,7 @@ constexpr size_t IS_ADDR_STR_LEN = 4096;
 char* addrStr = new char[IS_ADDR_STR_LEN]; // for error output
 
 // Copy this from Jamulus jamrecorder.cpp
-struct meta_t { int16_t channelId; };
+struct meta_t { int16_t channelId; unsigned long frameSequence; };
 
 void readMessages() {
   // open the MQ for audio frames
@@ -199,6 +200,8 @@ void readMessages() {
       break;
     }
 
+    // TODO flush the mq of old messages
+
     // send OSC messages to one client until it disconnects
     while(true) {
 
@@ -225,7 +228,7 @@ void readMessages() {
       Gist<float> gist(sampleCount, sampleRate);
       gist.processAudioFrame(floatFrame, sampleCount);
 
-      ssize_t bufferSize = makeOscPacket(meta->channelId, gist);
+      ssize_t bufferSize = makeOscPacket(meta->channelId, meta->frameSequence, gist);
 
       if (write(cfd, oscBuffer, bufferSize) != bufferSize) {
         close(cfd);
