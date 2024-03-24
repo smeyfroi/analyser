@@ -19,6 +19,8 @@ using namespace std::chrono_literals;
 
 #define BACKLOG 50
 
+const auto startTime = std::chrono::system_clock::now(); // arbitrary start point for timestamps
+
 const int sampleRate = 48000; // whatever Jamulus is sending to us
 
 mqd_t read_mqd;
@@ -26,8 +28,6 @@ const char* queueName = "/samples";
 
 int lfd;
 const char* osc_port = "8000";
-
-unsigned long long timestamp;
 
 void openMessageQueueForRead() {
   read_mqd = mq_open(queueName, O_RDONLY); // will block
@@ -91,6 +91,8 @@ char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
 size_t makeOscPacket(int channelId, Gist<float>& gist) {
+  const auto now = std::chrono::system_clock::now();
+  unsigned long long timestamp = std::chrono::nanoseconds(now - startTime).count();
   OSCPP::Client::Packet packet(oscBuffer, MAX_OSC_PACKET_SIZE);
   packet
     .openBundle(timestamp)
@@ -151,24 +153,25 @@ size_t makeOscPacket(int channelId, Gist<float>& gist) {
 }
 
 constexpr size_t MAX_MQ_FRAME_SIZE = 2048; // must be at least mq_msgsize
-char *receivedFrame = new char[MAX_MQ_FRAME_SIZE];
+char* receivedFrame = new char[MAX_MQ_FRAME_SIZE];
+char* receivedMeta = new char[MAX_MQ_FRAME_SIZE];
 constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_FRAME_SIZE / sizeof(float);
-float *floatFrame = new float[MAX_MQ_FLOAT_FRAME_SIZE];
+float* floatFrame = new float[MAX_MQ_FLOAT_FRAME_SIZE];
 constexpr size_t IS_ADDR_STR_LEN = 4096;
-char *addrStr = new char[IS_ADDR_STR_LEN]; // for error output
+char* addrStr = new char[IS_ADDR_STR_LEN]; // for error output
+
+// Copy this from Jamulus jamrecorder.cpp
+struct meta_t { int16_t channelId; };
 
 void readMessages() {
   // open the MQ for audio frames
   openMessageQueueForRead();
-
-  //timestamp = 0;
 
   // Loop to listen for clients and send them analysed audio
   char host[NI_MAXHOST];
   char service[NI_MAXSERV];
   char addrStr[ADDRSTRLEN];
   unsigned int prio;
-  int16_t channelId;
   while(true) { // handle client connections, serially, forever
 
     /* Accept a client connection, obtaining client's address */
@@ -199,10 +202,11 @@ void readMessages() {
     // send OSC messages to one client until it disconnects
     while(true) {
 
-      // First message is the channel ID as an int16_t
-      ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
-      if (sizeRead == sizeof(int16_t)) {
-        channelId = *(reinterpret_cast<int16_t*>(receivedFrame));
+      // First message is the metadata as a meta_t struct
+      struct meta_t* meta;
+      ssize_t sizeRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
+      if (sizeRead == sizeof(meta_t)) {
+        meta = reinterpret_cast<meta_t*>(receivedMeta);
         // Second message is the audio frame
         sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
       }
@@ -221,16 +225,16 @@ void readMessages() {
       Gist<float> gist(sampleCount, sampleRate);
       gist.processAudioFrame(floatFrame, sampleCount);
 
-      ssize_t bufferSize = makeOscPacket(channelId, gist);
+      ssize_t bufferSize = makeOscPacket(meta->channelId, gist);
 
       if (write(cfd, oscBuffer, bufferSize) != bufferSize) {
         close(cfd);
         std::cerr << "Disconnect and wait for new connection" << std::endl;
         break; // client went away so go back to waiting for a connection
       }
-    }
 
-    //timestamp++;
+      // TODO: write to file
+    }
   }
 }
 
