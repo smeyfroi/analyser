@@ -90,7 +90,8 @@ char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
 /* std::array<char, MAX_OSC_PACKET_SIZE> oscBuffer; */
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
-size_t makeOscPacket(int channelId, unsigned long frameSequence, Gist<float>& gist) {
+// Use the frameSequence as OSC timestamp, which is not correct, but might be enough
+size_t makeOscPacket(int channelId, uint64_t frameSequence, Gist<float>& gist) {
 //  const auto now = std::chrono::system_clock::now();
 //  unsigned long long timestamp = std::chrono::nanoseconds(now - startTime).count(); // TODO: this should be a 64bit NTP Timestamp
   OSCPP::Client::Packet packet(oscBuffer, MAX_OSC_PACKET_SIZE);
@@ -162,7 +163,7 @@ constexpr size_t IS_ADDR_STR_LEN = 4096;
 char* addrStr = new char[IS_ADDR_STR_LEN]; // for error output
 
 // Copy this from Jamulus jamrecorder.cpp
-struct meta_t { int16_t channelId; unsigned long frameSequence; };
+struct meta_t { int16_t channelId; uint64_t frameSequence; };
 
 void readMessages() {
   // open the MQ for audio frames
@@ -200,7 +201,15 @@ void readMessages() {
       break;
     }
 
-    // TODO flush the mq of old messages
+    // Flush the mq of old messages
+    attr.mq_flags = O_NONBLOCK;
+    mq_setattr(read_mqd, &attr, NULL);
+    ssize_t flushRead = 1;
+    while(flushRead > 1) {
+      flushRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
+    }
+    attr.mq_flags = 0;
+    mq_setattr(read_mqd, &attr, NULL);
 
     // send OSC messages to one client until it disconnects
     while(true) {
