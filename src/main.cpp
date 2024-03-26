@@ -205,7 +205,7 @@ void readMessages() {
     attr.mq_flags = O_NONBLOCK;
     mq_setattr(read_mqd, &attr, NULL);
     ssize_t flushRead = 1;
-    while(flushRead > 1) {
+    while(flushRead > 0) {
       flushRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
     }
     attr.mq_flags = 0;
