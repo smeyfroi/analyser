@@ -2,7 +2,9 @@
 #include <fcntl.h>              /* For definition of O_NONBLOCK */
 #include <iostream>
 #include <fstream>
+#include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <chrono>
 using namespace std::chrono_literals;
 #include <thread>
@@ -19,9 +21,7 @@ using namespace std::chrono_literals;
 
 #define BACKLOG 50
 
-/* const auto startTime = std::chrono::system_clock::now(); // arbitrary start point for timestamps */
-
-const int sampleRate = 48000; // whatever Jamulus is sending to us
+const int sampleRate = 48000; // for Gist: needs to match what Jamulus is sending
 
 mqd_t read_mqd;
 const char* queueName = "/samples";
@@ -87,7 +87,6 @@ const size_t MAX_OSC_PACKET_SIZE = 512; // safe max is ethernet packet MTU 1500 
 const size_t OSC_TERMINATOR_LENGTH = 6;
 const char* OSC_TERMINATOR = "[/TCP]";
 char* oscBuffer = new char[MAX_OSC_PACKET_SIZE];
-/* std::array<char, MAX_OSC_PACKET_SIZE> oscBuffer; */
 
 // Terminate the OSC buffer with a terminator that OpenFrameworks uses
 // Use the frameSequence as OSC timestamp, which is not correct, but might be enough
@@ -155,24 +154,29 @@ size_t makeOscPacket(int channelId, uint64_t frameSequence, Gist<float>& gist) {
 }
 
 constexpr size_t MAX_MQ_FRAME_SIZE = 2048; // must be at least mq_msgsize
-char* receivedFrame = new char[MAX_MQ_FRAME_SIZE];
 char* receivedMeta = new char[MAX_MQ_FRAME_SIZE];
+char* receivedFrame = new char[MAX_MQ_FRAME_SIZE];
 constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_FRAME_SIZE / sizeof(float);
 float* floatFrame = new float[MAX_MQ_FLOAT_FRAME_SIZE];
 constexpr size_t IS_ADDR_STR_LEN = 4096;
 char* addrStr = new char[IS_ADDR_STR_LEN]; // for error output
 
 // Copy this from Jamulus jamrecorder.cpp
-struct meta_t { int16_t channelId; uint64_t frameSequence; };
+static constexpr size_t MAX_OSC_FILEPATH_LENGTH = 64;
+enum class META_TYPE { startSession=0, endSession, audioFrame };
+struct startSessionMeta_t { int8_t metaType; char sessionDir[MAX_OSC_FILEPATH_LENGTH+1]; };
+struct endSessionMeta_t  { int8_t metaType; };
+struct audioMeta_t { int8_t metaType; int16_t channelId; uint64_t frameSequence; double offsetSeconds; char filename[MAX_OSC_FILEPATH_LENGTH+1]; };
+// Jam-20240326-145726119/____-86_175_246_x_22141-0-1.wav
+
+std::string oscDirectoryName; // populate on start of a session, clear on session end
+std::unordered_map<int16_t, std::unique_ptr<std::ofstream>> oscFiles; // channelId -> ofstream ptr
 
 void readMessages() {
   // open the MQ for audio frames
   openMessageQueueForRead();
 
   // Loop to listen for clients and send them analysed audio
-  char host[NI_MAXHOST];
-  char service[NI_MAXSERV];
-  char addrStr[ADDRSTRLEN];
   unsigned int prio;
   while(true) { // handle client connections, serially, forever
 
@@ -184,6 +188,10 @@ void readMessages() {
       std::this_thread::sleep_for(500ms);
       continue;
     }
+
+    char host[NI_MAXHOST];
+    char service[NI_MAXSERV];
+    char addrStr[ADDRSTRLEN];
     if (getnameinfo((struct sockaddr *) &claddr, addrlen, host, NI_MAXHOST, service, NI_MAXSERV, 0) == 0)
       snprintf(addrStr, ADDRSTRLEN, "(%s, %s)", host, service);
     else
@@ -205,7 +213,7 @@ void readMessages() {
     attr.mq_flags = O_NONBLOCK;
     mq_setattr(read_mqd, &attr, NULL);
     ssize_t flushRead = 1;
-    while(flushRead > 0) {
+    while(flushRead > -1) {
       flushRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
     }
     attr.mq_flags = 0;
@@ -214,17 +222,62 @@ void readMessages() {
     // send OSC messages to one client until it disconnects
     while(true) {
 
-      // First message is the metadata as a meta_t struct
-      struct meta_t* meta;
-      ssize_t sizeRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
-      if (sizeRead == sizeof(meta_t)) {
-        meta = reinterpret_cast<meta_t*>(receivedMeta);
-        // Second message is the audio frame
-        sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
+      // First mq message is metadata
+//      ssize_t sizeRead = mq_receive(read_mqd, receivedMeta, attr.mq_msgsize, &prio);
+//      if (sizeRead == sizeof(audioMeta_t)) {
+//        std::cerr << "ignoring unexpected audio meta, size " << sizeRead << std::endl;
+//        continue;
+//      }
+
+      if (sizeRead == sizeof(startSessionMeta_t)) {
+        startSessionMeta_t* meta = reinterpret_cast<startSessionMeta_t*>(receivedMeta);
+        if (meta->metaType != static_cast<int8_t>(META_TYPE::startSession)) {
+          std::cerr << "ignoring startSession meta, metaType " << meta->metaType << std::endl;
+          continue;
+        }
+        oscDirectoryName = meta->sessionDir;
+        std::string p = "/tmp/" + oscDirectoryName;
+        std::filesystem::create_directory(p);
+        oscFiles.clear();
+        std::cout << "start session " <<  oscDirectoryName << std::endl;
+        continue;
       }
-      // error checking
+
+      if (sizeRead == sizeof(endSessionMeta_t)) {
+        endSessionMeta_t* meta = reinterpret_cast<endSessionMeta_t*>(receivedMeta);
+        if (meta->metaType != static_cast<int8_t>(META_TYPE::endSession)) {
+          std::cerr << "ignoring endSession meta, metaType " << meta->metaType << std::endl;
+          continue;
+        }
+        oscFiles.clear(); // flushes, closes
+        std::string p = "/tmp/" + oscDirectoryName;
+        std::string cmd("aws s3 mv " + p + " s3://meyfroidt/osc/" + oscDirectoryName + " --recursive && rmdir " + p);
+        std::system(cmd.c_str());
+        std::cout << "end session" << std::endl;
+        oscDirectoryName = nullptr;
+        continue;
+      }
+
+      if (oscDirectoryName == "") {
+        std::cerr << "ignoring audio sent before session start" << std::endl;
+        continue;
+      }
+
+      if (sizeRead != sizeof(audioMeta_t)) {
+        std::cerr << "unexpected message size " << sizeRead << std::endl;
+        continue;
+      }
+
+      audioMeta_t* meta = reinterpret_cast<audioMeta_t*>(receivedMeta);
+      if (meta->metaType != static_cast<int8_t>(META_TYPE::audioFrame)) {
+        std::cerr << "ignoring audioFrame meta, metaType " << meta->metaType << std::endl;
+        continue;
+      }
+
+      // the next message is an audio frame
+      sizeRead = mq_receive(read_mqd, receivedFrame, attr.mq_msgsize, &prio);
       if (sizeRead < 200 || sizeRead % 2 == 1) {
-        std::cerr << "weird message size " << sizeRead << std::endl;
+        std::cerr << "ignoring audio frame with unexpected size " << sizeRead << std::endl;
         continue;
       }
 
@@ -239,13 +292,33 @@ void readMessages() {
 
       ssize_t bufferSize = makeOscPacket(meta->channelId, meta->frameSequence, gist);
 
+      // Write OSC packet to client TCP
       if (write(cfd, oscBuffer, bufferSize) != bufferSize) {
+        // FIXME: This terminates the session when the OSC client disconnects
+        // It would be better to decouple the process of analysing audio from the client
         close(cfd);
         std::cerr << "Disconnect and wait for new connection" << std::endl;
+        oscFiles.clear(); // flushes, closes
+        std::string p = "/tmp/" + oscDirectoryName;
+        std::string cmd("aws s3 mv " + p + " s3://meyfroidt/osc/" + oscDirectoryName + " --recursive && rmdir " + p);
+        std::system(cmd.c_str());
+        std::cout << "end session" << std::endl;
+        oscDirectoryName = nullptr;
         break; // client went away so go back to waiting for a connection
       }
 
-      // TODO: write to file
+      // Create new file on first time we see a channel
+      if (oscFiles.find(meta->channelId) == oscFiles.end()) {
+          std::string filepath("/tmp/" + oscDirectoryName + "/" + meta->filename + ".oscs");
+          oscFiles[meta->channelId] = std::make_unique<std::ofstream>(filepath, std::ios::binary);
+          // TODO: write metadata header
+          // OR NOT: write metadata as a file and keep the OSC streams pure
+          /* oscFiles[meta->channelId]->write("header"); */
+      }
+      // TODO: find the last frame number written, write blanks (as special markers) so that
+      // TODO: the file length is consistent throughout,
+      // TODO: then write the new osc data in place in a fixed-length format
+      oscFiles[meta->channelId]->write(oscBuffer, bufferSize);
     }
   }
 }
@@ -257,6 +330,8 @@ int main(int argc, char* argv[]) {
     std::cerr << "ERR: signal" << std::endl;
     exit(1);
   }
+
+  // TODO: signal handler for ctrl-c
 
   std::cout << "Start OSC server\n";
   startOscServer();
