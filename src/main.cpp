@@ -49,7 +49,7 @@ void openMessageQueueForWrite() {
   mode_t perms = S_IRUSR | S_IWUSR;
   write_attr.mq_maxmsg = 10;
   write_attr.mq_msgsize = MAX_MQ_MESSAGE_SIZE;
-  write_mqd = mq_open(OSC_QUEUE_NAME, O_WRONLY | O_CREAT, perms, &write_attr);
+  write_mqd = mq_open(OSC_QUEUE_NAME, O_WRONLY | O_CREAT | O_NONBLOCK, perms, &write_attr);
   if (write_mqd == (mqd_t)-1) {
     std::cerr << "Can't open mq '" << OSC_QUEUE_NAME << "' for write" << std::endl;
     exit(1);
@@ -166,40 +166,40 @@ void pipeMessages() {
 
   while(true) {
 
-    ssize_t sizeRead = mq_receive(read_mqd, receivedFrame, read_attr.mq_msgsize, &prio);
+    ssize_t sizeRead = mq_receive(read_mqd, receivedMeta, read_attr.mq_msgsize, &prio);
+    int8_t metaType = static_cast<int8_t>(receivedMeta[0]);
 
-    if (sizeRead == sizeof(startSessionMeta_t)) {
-      startSessionMeta_t* meta = reinterpret_cast<startSessionMeta_t*>(receivedMeta);
-      if (meta->metaType != static_cast<int8_t>(META_TYPE::startSession)) {
-        std::cerr << "ignoring startSession meta, metaType " << meta->metaType << std::endl;
+    if (metaType == static_cast<int8_t>(META_TYPE::startSession)) {
+      if (!oscDirectoryName.empty()) {
+        std::cerr << "ignoring start session when existing session open: " << oscDirectoryName << std::endl;
         continue;
       }
-      oscDirectoryName = meta->sessionDir;
+      startSessionMeta_t* meta = reinterpret_cast<startSessionMeta_t*>(receivedMeta);
+      oscDirectoryName = std::string(meta->sessionDir);
       std::string p = oscDirectoryPrefix + oscDirectoryName;
       std::filesystem::create_directory(p);
       // TODO: write metadata file
       oscFiles.clear(); // flushes, closes
-      std::cout << "start session " <<  oscDirectoryName << std::endl;
+      std::cout << "analyser: start session '" <<  oscDirectoryName << "'" << std::endl;
       continue;
     }
 
-    if (sizeRead == sizeof(endSessionMeta_t)) {
-      endSessionMeta_t* meta = reinterpret_cast<endSessionMeta_t*>(receivedMeta);
-      if (meta->metaType != static_cast<int8_t>(META_TYPE::endSession)) {
-        std::cerr << "ignoring endSession meta, metaType " << meta->metaType << std::endl;
+    if (metaType == static_cast<int8_t>(META_TYPE::endSession)) {
+      if (oscDirectoryName.empty()) {
+        std::cerr << "ignoring end session when no existing session" << std::endl;
         continue;
       }
       oscFiles.clear(); // flushes, closes
       std::string p = oscDirectoryPrefix + oscDirectoryName;
       std::string cmd("aws s3 mv " + p + " s3://meyfroidt/osc/" + oscDirectoryName + " --recursive && rmdir " + p);
       std::system(cmd.c_str());
-      std::cout << "end session" << oscDirectoryName << std::endl;
-      oscDirectoryName = nullptr;
+      std::cout << "analyser: end session '" << oscDirectoryName << "'" << std::endl;
+      oscDirectoryName = "";
       continue;
     }
 
-    if (oscDirectoryName == "") {
-      std::cerr << "ignoring audio sent before session start" << std::endl;
+    if (oscDirectoryName.empty()) {
+      // std::cerr << "ignoring audio sent before session start" << std::endl;
       continue;
     }
 
