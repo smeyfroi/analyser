@@ -3,7 +3,7 @@ INCLUDE = -I/usr/local/include -I/usr/include -I../Gist/src -I../Gist/libs/kiss_
 LDFLAGS = -L../Gist/build/src
 LIBS = -lGist -lrt -lstdc++fs
 CC = g++
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -std=c++17
 
 .PHONY: default all clean
 

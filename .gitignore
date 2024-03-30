@@ -1,3 +1,4 @@
 /tlpi-dist
 *.o
 /src/main.o
+.DS_Store
