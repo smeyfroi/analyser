@@ -203,6 +203,9 @@ void pipeMessages() {
       continue;
     }
 
+    // TODO: make this robust to errors when sending audio or audio-meta
+    // so that we can never miss the session markers
+
     if (sizeRead != sizeof(audioMeta_t)) {
       std::cerr << "expected audio meta, but read unexpected message size " << sizeRead << std::endl;
       continue;
@@ -234,7 +237,7 @@ void pipeMessages() {
 
     // Forward OSC to the oscserver
     if (mq_send(write_mqd, oscBuffer, bufferSize, 0) == -1) {
-      std::cerr << "failed to send osc buffer" << std::endl;
+//      std::cerr << "failed to send osc buffer" << std::endl;
     }
 
     // Create new file on first time we see a channel
