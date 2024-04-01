@@ -132,8 +132,13 @@ const int SAMPLE_RATE = 48000; // for Gist: needs to match what Jamulus is sendi
 
 char receivedMeta[MAX_MQ_MESSAGE_SIZE];
 char receivedFrame[MAX_MQ_MESSAGE_SIZE];
-constexpr size_t MAX_MQ_FLOAT_FRAME_SIZE = MAX_MQ_MESSAGE_SIZE / sizeof(float);
-float floatFrame[MAX_MQ_FLOAT_FRAME_SIZE];
+constexpr float FRAMES_PER_SUPERFRAME = 8.0;
+constexpr float SAMPLES_PER_FRAME = 128.0; // need to know what Jamulus is sending per audio frame
+constexpr size_t SAMPLES_PER_SUPERFRAME = SAMPLES_PER_FRAME * FRAMES_PER_SUPERFRAME;
+// FIXME: should be a hash of structs
+std::unordered_map<int16_t, std::array<float, SAMPLES_PER_SUPERFRAME>> superFrames; // within a session, channelId -> superframe
+std::unordered_map<int16_t, int16_t> superFrameOffsets; // within a session, channelId -> current superframe offset
+std::unordered_map<int16_t, std::unique_ptr<std::ofstream>> oscFiles; // within a session, channelId -> ofstream ptr
 
 // Copy this from Jamulus jamrecorder.cpp
 static constexpr size_t MAX_OSC_FILEPATH_LENGTH = 64;
@@ -145,7 +150,6 @@ struct audioMeta_t { int8_t metaType; int16_t channelId; uint64_t frameSequence;
 
 std::string oscDirectoryPrefix("/tmp/");
 std::string oscDirectoryName; // populate on start of a session, clear on session end
-std::unordered_map<int16_t, std::unique_ptr<std::ofstream>> oscFiles; // within a session, channelId -> ofstream ptr
 
 void pipeMessages() {
   // open the MQ to read audio frames from Jamulus
@@ -224,15 +228,31 @@ void pipeMessages() {
       continue;
     }
 
-    // samples from Jamulus are int16_t; Gist wants float32; so convert
+    // Create new superframe if required
+    superFrames.try_emplace(meta->channelId, std::array<float, SAMPLES_PER_SUPERFRAME>());
+    superFrameOffsets.try_emplace(meta->channelId, 0);
+    // TODO: for analysis, copy last frame over current if we missed any
+    // Merge 8 frames from Jamulus into a super-frame for analysis
+    // samples from Jamulus are int16_t, Gist wants float32, so convert
     int sampleCount = sizeRead / sizeof(int16_t);
-    for(ssize_t i = 0; i < sizeRead; i += sizeof(int16_t)) {
-      floatFrame[i / sizeof(int16_t)] = static_cast<float>(*(reinterpret_cast<int16_t*>(receivedFrame + i))); // little-endian int16_t to float32
+    auto& superFrame = superFrames[meta->channelId];
+    if (sampleCount != SAMPLES_PER_FRAME) {
+      std::cerr << "ignoring frame where sampleCount " << sampleCount << " != " << SAMPLES_PER_FRAME << std::endl;
+      continue;
     }
+    float* data = superFrame.data() + superFrameOffsets[meta->channelId]++;
+    for(ssize_t i = 0; i < sampleCount * sizeof(int16_t); i += sizeof(int16_t)) {
+      *data++ = static_cast<float>(*(reinterpret_cast<int16_t*>(receivedFrame + i))); // little-endian int16_t to float32
+    }
+
+    if (superFrameOffsets[meta->channelId] < FRAMES_PER_SUPERFRAME - 1) {
+      continue; // keep filling up the superframe
+    }
+    superFrameOffsets[meta->channelId] = 0;
 
     // Use Gist to analyse and then make an OSC packet
     Gist<float> gist(sampleCount, SAMPLE_RATE);
-    gist.processAudioFrame(floatFrame, sampleCount);
+    gist.processAudioFrame(superFrame.data(), sampleCount);
     ssize_t bufferSize = makeOscPacket(meta->channelId, meta->frameSequence, gist);
 
     // Forward OSC to the oscserver
