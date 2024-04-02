@@ -245,7 +245,7 @@ void pipeMessages() {
       *data++ = static_cast<float>(*(reinterpret_cast<int16_t*>(receivedFrame + i))); // little-endian int16_t to float32
     }
 
-    if (superFrameOffsets[meta->channelId] < FRAMES_PER_SUPERFRAME - 1) {
+    if (superFrameOffsets[meta->channelId] < FRAMES_PER_SUPERFRAME) {
       continue; // keep filling up the superframe
     }
     superFrameOffsets[meta->channelId] = 0;
