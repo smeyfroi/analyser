@@ -132,7 +132,7 @@ const int SAMPLE_RATE = 48000; // for Gist: needs to match what Jamulus is sendi
 
 char receivedMeta[MAX_MQ_MESSAGE_SIZE];
 char receivedFrame[MAX_MQ_MESSAGE_SIZE];
-constexpr float FRAMES_PER_SUPERFRAME = 8.0;
+constexpr float FRAMES_PER_SUPERFRAME = 8.0; // 25 frames would be 1/15th of a sec
 constexpr float SAMPLES_PER_FRAME = 128.0; // need to know what Jamulus is sending per audio frame
 constexpr size_t SAMPLES_PER_SUPERFRAME = SAMPLES_PER_FRAME * FRAMES_PER_SUPERFRAME;
 // FIXME: should be a hash of structs
